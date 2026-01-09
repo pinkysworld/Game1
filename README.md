@@ -4,10 +4,12 @@ A macOS-friendly, single-player strategy game inspired by Sierra's classic oil b
 
 ## Gameplay Highlights
 - **Scenarios** with different grids, budgets, and market swings.
-- **Competitors** that buy land, drill, pump, and sell against you.
-- **Production management** with storage capacity upgrades.
-- **Random frontier events** that can boost or hurt your balance.
+- **Competitors** that buy land, drill, pump, upgrade, and sell against you.
+- **Surveys** to estimate reserves before drilling.
+- **Pump upgrades** to boost daily production.
+- **Loans** that help fund expansion (with interest).
 - **Save & load** support to continue your campaign later.
+- **Styled map visuals** with themed backdrops and pump indicators.
 
 ## Controls
 - Click a tile on the map to select it.

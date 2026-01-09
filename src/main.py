@@ -1,12 +1,19 @@
 import json
 import random
 import tkinter as tk
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 OIL_PER_DAY_MIN = 6
 OIL_PER_DAY_MAX = 22
+MAX_PUMP_LEVEL = 3
+SURVEY_COST = 350
+PUMP_UPGRADE_COST = 700
+STORAGE_EXPANSION = 15
+LOAN_CHUNK = 2000
+DEFAULT_LOAN_LIMIT = 6000
+DEFAULT_LOAN_RATE = 0.06
 
 
 @dataclass
@@ -23,6 +30,7 @@ class Scenario:
     price_min: int
     price_max: int
     event_chance: float
+    theme: str
 
 
 @dataclass
@@ -33,9 +41,11 @@ class Tile:
     output_rate: int
     owner: str | None = None
     drilled: bool = False
-    pump: bool = False
+    pump_level: int = 0
     storage: int = 0
     capacity: int = 20
+    survey_low: int | None = None
+    survey_high: int | None = None
 
     @property
     def depleted(self) -> bool:
@@ -44,6 +54,17 @@ class Tile:
     @property
     def available_capacity(self) -> int:
         return max(0, self.capacity - self.storage)
+
+    @property
+    def has_pump(self) -> bool:
+        return self.pump_level > 0
+
+    @property
+    def current_output(self) -> int:
+        if not self.has_pump:
+            return 0
+        multiplier = 1 + (self.pump_level - 1) * 0.5
+        return int(self.output_rate * multiplier)
 
 
 @dataclass
@@ -72,6 +93,7 @@ SCENARIOS = [
         price_min=30,
         price_max=120,
         event_chance=0.35,
+        theme="prairie",
     ),
     Scenario(
         name="Desert Wildcat",
@@ -86,6 +108,7 @@ SCENARIOS = [
         price_min=25,
         price_max=150,
         event_chance=0.4,
+        theme="desert",
     ),
     Scenario(
         name="Coastal Rush",
@@ -100,6 +123,7 @@ SCENARIOS = [
         price_min=35,
         price_max=110,
         event_chance=0.32,
+        theme="coastal",
     ),
 ]
 
@@ -114,15 +138,21 @@ class BlackOilGame:
         self.cash = self.scenario.starting_cash
         self.price = random.randint(self.scenario.price_min, self.scenario.price_max)
         self.event_message = ""
+        self.news_message = ""
         self.tiles: list[Tile] = []
         self.competitors: list[Competitor] = []
         self.selected_tile: Tile | None = None
+        self.loan_balance = 0
+        self.loan_limit = DEFAULT_LOAN_LIMIT
+        self.loan_rate = DEFAULT_LOAN_RATE
+        self.map_seed = random.randint(1000, 9999)
+        self.decorations: list[tuple[int, int, int, str]] = []
 
         self._build_ui()
         self._new_game()
 
     def _build_ui(self) -> None:
-        self.root.geometry("1080x620")
+        self.root.geometry("1120x670")
         self.root.resizable(False, False)
 
         main_frame = tk.Frame(self.root, bg="#0b1120")
@@ -138,17 +168,29 @@ class BlackOilGame:
         self.canvas.grid(row=0, column=0, padx=16, pady=16)
         self.canvas.bind("<Button-1>", self._on_canvas_click)
 
-        panel = tk.Frame(main_frame, width=360, bg="#0b1120")
+        panel = tk.Frame(main_frame, width=400, bg="#0b1120")
         panel.grid(row=0, column=1, sticky="n", padx=(0, 16), pady=16)
 
+        header = tk.Frame(panel, bg="#0b1120")
+        header.pack(anchor="w")
+
         title = tk.Label(
-            panel,
+            header,
             text="BLACK OIL",
             fg="#f8fafc",
             bg="#0b1120",
-            font=("Helvetica", 18, "bold"),
+            font=("Helvetica", 20, "bold"),
         )
-        title.pack(anchor="w")
+        title.grid(row=0, column=0, sticky="w")
+
+        subtitle = tk.Label(
+            header,
+            text="Frontier Drilling Syndicate",
+            fg="#94a3b8",
+            bg="#0b1120",
+            font=("Helvetica", 10, "italic"),
+        )
+        subtitle.grid(row=1, column=0, sticky="w")
 
         self.scenario_var = tk.StringVar(value=self.scenario.name)
         scenario_frame = tk.Frame(panel, bg="#0b1120")
@@ -176,6 +218,17 @@ class BlackOilGame:
         )
         self.new_game_button.grid(row=1, column=1, padx=8)
 
+        self.scenario_desc = tk.Label(
+            panel,
+            text="",
+            wraplength=320,
+            justify="left",
+            fg="#cbd5f5",
+            bg="#0b1120",
+            font=("Helvetica", 9),
+        )
+        self.scenario_desc.pack(anchor="w", pady=(4, 8))
+
         self.stats_label = tk.Label(
             panel,
             text="",
@@ -184,7 +237,10 @@ class BlackOilGame:
             bg="#0b1120",
             font=("Helvetica", 12),
         )
-        self.stats_label.pack(anchor="w", pady=(12, 4))
+        self.stats_label.pack(anchor="w", pady=(6, 4))
+
+        self.progress = ttk.Progressbar(panel, length=260, mode="determinate")
+        self.progress.pack(anchor="w", pady=(2, 8))
 
         self.tile_label = tk.Label(
             panel,
@@ -199,31 +255,48 @@ class BlackOilGame:
         action_frame = tk.Frame(panel, bg="#0b1120")
         action_frame.pack(anchor="w")
 
-        self.buy_button = tk.Button(action_frame, text="Buy Land", command=self.buy_land, width=18)
+        self.buy_button = tk.Button(action_frame, text="Buy Land", command=self.buy_land, width=20)
         self.buy_button.grid(row=0, column=0, pady=2)
 
-        self.drill_button = tk.Button(action_frame, text="Drill Well", command=self.drill_well, width=18)
-        self.drill_button.grid(row=1, column=0, pady=2)
+        self.survey_button = tk.Button(action_frame, text="Survey", command=self.survey_tile, width=20)
+        self.survey_button.grid(row=1, column=0, pady=2)
 
-        self.pump_button = tk.Button(action_frame, text="Build Pump", command=self.build_pump, width=18)
-        self.pump_button.grid(row=2, column=0, pady=2)
+        self.drill_button = tk.Button(action_frame, text="Drill Well", command=self.drill_well, width=20)
+        self.drill_button.grid(row=2, column=0, pady=2)
 
-        self.storage_button = tk.Button(action_frame, text="Add Storage", command=self.add_storage, width=18)
-        self.storage_button.grid(row=3, column=0, pady=2)
+        self.pump_button = tk.Button(action_frame, text="Build Pump", command=self.build_pump, width=20)
+        self.pump_button.grid(row=3, column=0, pady=2)
 
-        self.sell_button = tk.Button(action_frame, text="Sell Oil", command=self.sell_oil, width=18)
-        self.sell_button.grid(row=4, column=0, pady=2)
+        self.upgrade_button = tk.Button(
+            action_frame, text="Upgrade Pump", command=self.upgrade_pump, width=20
+        )
+        self.upgrade_button.grid(row=4, column=0, pady=2)
 
-        self.next_day_button = tk.Button(panel, text="Advance Day", command=self.next_day, width=18)
+        self.storage_button = tk.Button(action_frame, text="Add Storage", command=self.add_storage, width=20)
+        self.storage_button.grid(row=5, column=0, pady=2)
+
+        self.sell_button = tk.Button(action_frame, text="Sell Oil", command=self.sell_oil, width=20)
+        self.sell_button.grid(row=6, column=0, pady=2)
+
+        self.next_day_button = tk.Button(panel, text="Advance Day", command=self.next_day, width=20)
         self.next_day_button.pack(anchor="w", pady=(10, 4))
+
+        loan_frame = tk.Frame(panel, bg="#0b1120")
+        loan_frame.pack(anchor="w", pady=(2, 8))
+
+        self.loan_button = tk.Button(loan_frame, text="Take Loan", command=self.take_loan, width=9)
+        self.loan_button.grid(row=0, column=0, padx=(0, 6))
+
+        self.repay_button = tk.Button(loan_frame, text="Repay Loan", command=self.repay_loan, width=9)
+        self.repay_button.grid(row=0, column=1)
 
         save_load_frame = tk.Frame(panel, bg="#0b1120")
         save_load_frame.pack(anchor="w", pady=(2, 8))
 
-        self.save_button = tk.Button(save_load_frame, text="Save Game", command=self.save_game, width=8)
+        self.save_button = tk.Button(save_load_frame, text="Save Game", command=self.save_game, width=9)
         self.save_button.grid(row=0, column=0, padx=(0, 6))
 
-        self.load_button = tk.Button(save_load_frame, text="Load Game", command=self.load_game, width=8)
+        self.load_button = tk.Button(save_load_frame, text="Load Game", command=self.load_game, width=9)
         self.load_button.grid(row=0, column=1)
 
         self.competitor_label = tk.Label(
@@ -236,7 +309,18 @@ class BlackOilGame:
         )
         self.competitor_label.pack(anchor="w", pady=(6, 2))
 
-        self.log = tk.Text(panel, width=38, height=14, state=tk.DISABLED, font=("Helvetica", 9))
+        self.news_label = tk.Label(
+            panel,
+            text="",
+            justify="left",
+            wraplength=320,
+            fg="#fbbf24",
+            bg="#0b1120",
+            font=("Helvetica", 9, "italic"),
+        )
+        self.news_label.pack(anchor="w", pady=(4, 6))
+
+        self.log = tk.Text(panel, width=42, height=12, state=tk.DISABLED, font=("Helvetica", 9))
         self.log.pack(anchor="w")
 
     def _new_game(self) -> None:
@@ -246,17 +330,29 @@ class BlackOilGame:
         self.cash = self.scenario.starting_cash
         self.price = random.randint(self.scenario.price_min, self.scenario.price_max)
         self.event_message = ""
+        self.news_message = ""
+        self.loan_balance = 0
+        self.loan_limit = DEFAULT_LOAN_LIMIT
+        self.loan_rate = DEFAULT_LOAN_RATE
+        self.map_seed = random.randint(1000, 9999)
+        self.decorations = self._create_decorations(self.map_seed)
         self.tiles = self._create_tiles()
         self.competitors = self._create_competitors()
         self.selected_tile = None
+        self._reset_log()
         self._log("New game started.")
         self._refresh_ui()
+
+    def _reset_log(self) -> None:
+        self.log.config(state=tk.NORMAL)
+        self.log.delete("1.0", tk.END)
+        self.log.config(state=tk.DISABLED)
 
     def _create_tiles(self) -> list[Tile]:
         tiles = []
         for row in range(self.scenario.grid_size):
             for col in range(self.scenario.grid_size):
-                reserve = random.randint(0, 160)
+                reserve = random.randint(0, 170)
                 tiles.append(
                     Tile(
                         row=row,
@@ -274,6 +370,18 @@ class BlackOilGame:
             Competitor("Silver Creek", 3400, 0.4, "#a855f7", 28),
         ]
 
+    def _create_decorations(self, seed: int) -> list[tuple[int, int, int, str]]:
+        rng = random.Random(seed)
+        decorations = []
+        grid = self.scenario.grid_size
+        for _ in range(grid * grid * 2):
+            x = rng.randint(0, 599)
+            y = rng.randint(0, 599)
+            size = rng.randint(4, 12)
+            color = rng.choice(["#0f172a", "#1e293b", "#334155", "#0f172a"])
+            decorations.append((x, y, size, color))
+        return decorations
+
     def _tile_at(self, x: int, y: int) -> Tile | None:
         col = x // self.tile_size
         row = y // self.tile_size
@@ -289,6 +397,22 @@ class BlackOilGame:
             if competitor.name == owner:
                 return competitor.color
         return "#1f2937"
+
+    def _theme_palette(self) -> tuple[str, str]:
+        if self.scenario.theme == "desert":
+            return "#1f2937", "#3f2c1c"
+        if self.scenario.theme == "coastal":
+            return "#0f172a", "#0f766e"
+        return "#0f172a", "#1f2937"
+
+    def _draw_background(self, canvas_size: int) -> None:
+        base, accent = self._theme_palette()
+        step = 20
+        for i in range(0, canvas_size, step):
+            color = base if i % (step * 2) == 0 else accent
+            self.canvas.create_rectangle(0, i, canvas_size, i + step, fill=color, outline="")
+        for x, y, size, color in self.decorations:
+            self.canvas.create_oval(x, y, x + size, y + size, fill=color, outline="")
 
     def _draw_pump(self, x0: int, y0: int, size: int, color: str) -> None:
         base = size * 0.2
@@ -328,9 +452,10 @@ class BlackOilGame:
     def _draw_grid(self) -> None:
         self.canvas.delete("all")
         grid_size = self.scenario.grid_size
-        self.tile_size = min(600 // grid_size, 100)
+        self.tile_size = min(600 // grid_size, 110)
         canvas_size = self.tile_size * grid_size
         self.canvas.config(width=canvas_size, height=canvas_size)
+        self._draw_background(canvas_size)
 
         for tile in self.tiles:
             x0 = tile.col * self.tile_size
@@ -348,13 +473,13 @@ class BlackOilGame:
                 self.canvas.create_oval(
                     x0 + 8,
                     y0 + 8,
-                    x0 + 24,
-                    y0 + 24,
+                    x0 + 26,
+                    y0 + 26,
                     fill="#fbbf24",
                     outline="",
                 )
 
-            if tile.pump:
+            if tile.has_pump:
                 self._draw_pump(x0 + 8, y0 + 18, self.tile_size - 16, "#e2e8f0")
 
             if tile.owner == "player":
@@ -380,12 +505,22 @@ class BlackOilGame:
                 )
 
             if tile.owner:
+                label = tile.owner if tile.owner == "player" else "Rival"
                 self.canvas.create_text(
                     x0 + self.tile_size / 2,
                     y1 - 10,
-                    text=tile.owner if tile.owner == "player" else "Rival",
+                    text=label,
                     fill="#f8fafc",
                     font=("Helvetica", 8, "bold"),
+                )
+
+            if tile.owner == "player" and tile.has_pump:
+                self.canvas.create_text(
+                    x0 + self.tile_size / 2,
+                    y0 + 12,
+                    text=f"L{tile.pump_level}",
+                    fill="#f8fafc",
+                    font=("Helvetica", 7, "bold"),
                 )
 
     def _update_buttons(self) -> None:
@@ -393,12 +528,18 @@ class BlackOilGame:
         has_tile = tile is not None
         is_player_tile = tile is not None and tile.owner == "player"
         self.buy_button.config(state=tk.NORMAL if has_tile and tile and tile.owner is None else tk.DISABLED)
+        self.survey_button.config(state=tk.NORMAL if has_tile and is_player_tile else tk.DISABLED)
         self.drill_button.config(
             state=tk.NORMAL if has_tile and is_player_tile and not tile.drilled else tk.DISABLED
         )
         self.pump_button.config(
             state=tk.NORMAL
-            if has_tile and is_player_tile and tile.drilled and not tile.pump and not tile.depleted
+            if has_tile and is_player_tile and tile.drilled and not tile.has_pump and not tile.depleted
+            else tk.DISABLED
+        )
+        self.upgrade_button.config(
+            state=tk.NORMAL
+            if has_tile and is_player_tile and tile.has_pump and tile.pump_level < MAX_PUMP_LEVEL
             else tk.DISABLED
         )
         self.storage_button.config(state=tk.NORMAL if has_tile and is_player_tile else tk.DISABLED)
@@ -412,19 +553,27 @@ class BlackOilGame:
                 f"Cash: ${self.cash:,}\n"
                 f"Oil Price: ${self.price}/barrel\n"
                 f"Stored Oil: {self._total_storage('player')} barrels\n"
+                f"Loan Balance: ${self.loan_balance:,}\n"
                 f"Event: {self.event_message or 'None'}"
             )
         )
+        self.scenario_desc.config(text=self.scenario.description)
+        self.progress["value"] = (self.day / self.scenario.max_days) * 100
 
         if self.selected_tile:
             tile = self.selected_tile
             reserve_text = "Unknown" if not tile.drilled else max(tile.reserve, 0)
+            survey_text = "None"
+            if tile.survey_low is not None and tile.survey_high is not None:
+                survey_text = f"{tile.survey_low}-{tile.survey_high}"
+            pump_text = f"Level {tile.pump_level}" if tile.has_pump else "None"
             self.tile_label.config(
                 text=(
                     f"Selected Tile ({tile.row + 1}, {tile.col + 1})\n"
                     f"Owner: {tile.owner or 'Unowned'}\n"
+                    f"Survey: {survey_text}\n"
                     f"Drilled: {'Yes' if tile.drilled else 'No'}\n"
-                    f"Pump: {'Yes' if tile.pump else 'No'}\n"
+                    f"Pump: {pump_text}\n"
                     f"Reserve: {reserve_text}\n"
                     f"Storage: {tile.storage}/{tile.capacity} barrels"
                 )
@@ -432,6 +581,7 @@ class BlackOilGame:
         else:
             self.tile_label.config(text="Select a tile to inspect.")
 
+        self.news_label.config(text=self.news_message)
         self._draw_grid()
         self._update_buttons()
         self._update_competitor_panel()
@@ -474,6 +624,27 @@ class BlackOilGame:
         self._log(f"Bought land at ({tile.row + 1}, {tile.col + 1}) for ${self.scenario.land_cost}.")
         self._refresh_ui()
 
+    def survey_tile(self) -> None:
+        if not self.selected_tile:
+            return
+        tile = self.selected_tile
+        if tile.owner != "player":
+            return
+        if self.cash < SURVEY_COST:
+            messagebox.showinfo("Insufficient Cash", "You need more cash to run a survey.")
+            return
+        self.cash -= SURVEY_COST
+        if tile.reserve <= 0:
+            low, high = 0, 10
+        else:
+            error = random.uniform(0.15, 0.35)
+            low = max(0, int(tile.reserve * (1 - error)))
+            high = int(tile.reserve * (1 + error))
+        tile.survey_low = low
+        tile.survey_high = high
+        self._log(f"Survey complete for ({tile.row + 1}, {tile.col + 1}).")
+        self._refresh_ui()
+
     def drill_well(self) -> None:
         if not self.selected_tile:
             return
@@ -500,9 +671,25 @@ class BlackOilGame:
         if self.cash < self.scenario.pump_cost:
             messagebox.showinfo("Insufficient Cash", "You need more cash to build a pump.")
             return
-        tile.pump = True
+        tile.pump_level = 1
         self.cash -= self.scenario.pump_cost
         self._log("Pump installed. Production will start next day.")
+        self._refresh_ui()
+
+    def upgrade_pump(self) -> None:
+        if not self.selected_tile:
+            return
+        tile = self.selected_tile
+        if tile.owner != "player" or not tile.has_pump:
+            return
+        if tile.pump_level >= MAX_PUMP_LEVEL:
+            return
+        if self.cash < PUMP_UPGRADE_COST:
+            messagebox.showinfo("Insufficient Cash", "You need more cash to upgrade the pump.")
+            return
+        tile.pump_level += 1
+        self.cash -= PUMP_UPGRADE_COST
+        self._log(f"Pump upgraded to level {tile.pump_level}.")
         self._refresh_ui()
 
     def add_storage(self) -> None:
@@ -514,7 +701,7 @@ class BlackOilGame:
         if self.cash < self.scenario.storage_cost:
             messagebox.showinfo("Insufficient Cash", "You need more cash to expand storage.")
             return
-        tile.capacity += 15
+        tile.capacity += STORAGE_EXPANSION
         self.cash -= self.scenario.storage_cost
         self._log(f"Added storage on tile ({tile.row + 1}, {tile.col + 1}).")
         self._refresh_ui()
@@ -530,6 +717,28 @@ class BlackOilGame:
         self._log(f"Sold {total_storage} barrels for ${revenue}.")
         self._refresh_ui()
 
+    def take_loan(self) -> None:
+        if self.loan_balance >= self.loan_limit:
+            messagebox.showinfo("Loan Limit", "You have reached the loan limit.")
+            return
+        amount = min(LOAN_CHUNK, self.loan_limit - self.loan_balance)
+        self.cash += amount
+        self.loan_balance += amount
+        self._log(f"Took a loan for ${amount}.")
+        self._refresh_ui()
+
+    def repay_loan(self) -> None:
+        if self.loan_balance <= 0:
+            return
+        amount = min(LOAN_CHUNK, self.loan_balance)
+        if self.cash < amount:
+            messagebox.showinfo("Insufficient Cash", "You need more cash to repay the loan.")
+            return
+        self.cash -= amount
+        self.loan_balance -= amount
+        self._log(f"Repaid ${amount} of loans.")
+        self._refresh_ui()
+
     def next_day(self) -> None:
         if self.day >= self.scenario.max_days:
             self._final_score()
@@ -540,6 +749,8 @@ class BlackOilGame:
         self._produce_oil()
         self._competitor_turns()
         self._random_event()
+        self._apply_interest()
+        self._refresh_news()
         self._refresh_ui()
 
         if self.day == self.scenario.max_days:
@@ -551,8 +762,8 @@ class BlackOilGame:
 
     def _produce_oil(self) -> None:
         for tile in self.tiles:
-            if tile.pump and tile.reserve > 0 and tile.available_capacity > 0:
-                output = min(tile.output_rate, tile.reserve, tile.available_capacity)
+            if tile.has_pump and tile.reserve > 0 and tile.available_capacity > 0:
+                output = min(tile.current_output, tile.reserve, tile.available_capacity)
                 tile.reserve -= output
                 tile.storage += output
                 if tile.reserve == 0:
@@ -580,10 +791,13 @@ class BlackOilGame:
             if not tile.drilled and competitor.cash >= self.scenario.drill_cost:
                 tile.drilled = True
                 competitor.cash -= self.scenario.drill_cost
-            if tile.drilled and not tile.pump and competitor.cash >= self.scenario.pump_cost and tile.reserve > 0:
-                tile.pump = True
+            if tile.drilled and not tile.has_pump and competitor.cash >= self.scenario.pump_cost and tile.reserve > 0:
+                tile.pump_level = 1
                 competitor.cash -= self.scenario.pump_cost
-            if tile.pump and tile.available_capacity < 5 and competitor.cash >= self.scenario.storage_cost:
+            if tile.has_pump and tile.pump_level < MAX_PUMP_LEVEL and competitor.cash >= PUMP_UPGRADE_COST:
+                tile.pump_level += 1
+                competitor.cash -= PUMP_UPGRADE_COST
+            if tile.has_pump and tile.available_capacity < 5 and competitor.cash >= self.scenario.storage_cost:
                 tile.capacity += 10
                 competitor.cash -= self.scenario.storage_cost
 
@@ -601,11 +815,11 @@ class BlackOilGame:
         if random.random() > self.scenario.event_chance:
             return
         roll = random.random()
-        if roll < 0.4:
+        if roll < 0.35:
             loss = random.randint(150, 450)
             self.cash = max(0, self.cash - loss)
             self.event_message = f"Equipment repairs cost ${loss}."
-        elif roll < 0.7:
+        elif roll < 0.65:
             bonus = random.randint(120, 480)
             self.cash += bonus
             self.event_message = f"Pipeline bonus payout: ${bonus}."
@@ -616,8 +830,25 @@ class BlackOilGame:
         if self.event_message:
             self._log(self.event_message)
 
+    def _apply_interest(self) -> None:
+        if self.loan_balance <= 0:
+            return
+        interest = int(self.loan_balance * self.loan_rate)
+        self.loan_balance += interest
+        self._log(f"Loan interest accrued: ${interest}.")
+
+    def _refresh_news(self) -> None:
+        headlines = [
+            "Rail tycoon eyes new drilling leases.",
+            "Steamship delays tighten coastal supply.",
+            "Bankers whisper about a credit squeeze.",
+            "Local boomtown celebrates new refinery.",
+            "Sparks from the rail yard ignite rumors of expansion.",
+        ]
+        self.news_message = random.choice(headlines)
+
     def _final_score(self) -> None:
-        assets = self.cash + self._total_storage("player") * self.price
+        assets = self.cash + self._total_storage("player") * self.price - self.loan_balance
         messagebox.showinfo(
             "Season Over",
             f"You finished with ${assets:,} in assets.\n"
@@ -637,6 +868,12 @@ class BlackOilGame:
             "cash": self.cash,
             "price": self.price,
             "event_message": self.event_message,
+            "news_message": self.news_message,
+            "loan_balance": self.loan_balance,
+            "loan_limit": self.loan_limit,
+            "loan_rate": self.loan_rate,
+            "map_seed": self.map_seed,
+            "decorations": self.decorations,
             "tiles": [
                 {
                     "row": tile.row,
@@ -645,9 +882,11 @@ class BlackOilGame:
                     "output_rate": tile.output_rate,
                     "owner": tile.owner,
                     "drilled": tile.drilled,
-                    "pump": tile.pump,
+                    "pump_level": tile.pump_level,
                     "storage": tile.storage,
                     "capacity": tile.capacity,
+                    "survey_low": tile.survey_low,
+                    "survey_high": tile.survey_high,
                 }
                 for tile in self.tiles
             ],
@@ -677,6 +916,14 @@ class BlackOilGame:
         self.cash = data.get("cash", self.scenario.starting_cash)
         self.price = data.get("price", self.scenario.price_min)
         self.event_message = data.get("event_message", "")
+        self.news_message = data.get("news_message", "")
+        self.loan_balance = data.get("loan_balance", 0)
+        self.loan_limit = data.get("loan_limit", DEFAULT_LOAN_LIMIT)
+        self.loan_rate = data.get("loan_rate", DEFAULT_LOAN_RATE)
+        self.map_seed = data.get("map_seed", random.randint(1000, 9999))
+        self.decorations = [tuple(item) for item in data.get("decorations", [])] or self._create_decorations(
+            self.map_seed
+        )
 
         self.tiles = [
             Tile(
@@ -686,9 +933,11 @@ class BlackOilGame:
                 output_rate=tile_data["output_rate"],
                 owner=tile_data.get("owner"),
                 drilled=tile_data.get("drilled", False),
-                pump=tile_data.get("pump", False),
+                pump_level=tile_data.get("pump_level", 0),
                 storage=tile_data.get("storage", 0),
                 capacity=tile_data.get("capacity", 20),
+                survey_low=tile_data.get("survey_low"),
+                survey_high=tile_data.get("survey_high"),
             )
             for tile_data in data.get("tiles", [])
         ]
@@ -707,6 +956,7 @@ class BlackOilGame:
         if not self.competitors:
             self.competitors = self._create_competitors()
         self.selected_tile = None
+        self._reset_log()
         self._log(f"Game loaded from {path}.")
         self._refresh_ui()
 
