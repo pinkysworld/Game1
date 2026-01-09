@@ -272,11 +272,14 @@ class BlackOilGame:
         self.market_demand = BASE_DEMAND
         self.last_day_production = 0
         self.buyers: list[Buyer] = []
+        self.fx_tick = 0
+        self.fx_running = False
         self.map_seed = random.randint(1000, 9999)
         self.decorations: list[tuple[int, int, int, str]] = []
 
         self._build_ui()
         self._new_game()
+        self._start_fx_loop()
 
     def _build_ui(self) -> None:
         self.root.geometry("1260x760")
@@ -709,6 +712,7 @@ class BlackOilGame:
             self.canvas.create_oval(x, y, x + size, y + size, fill=color, outline="")
 
         self._draw_river(canvas_size)
+        self._draw_grid_roads(canvas_size)
 
         contour_color = "#0f172a"
         for i in range(4):
@@ -742,6 +746,21 @@ class BlackOilGame:
             x1, y1 = points[i + 1]
             self.canvas.create_line(x0, y0, x1, y1, fill="#38bdf8", width=10, smooth=True)
             self.canvas.create_line(x0, y0, x1, y1, fill="#0ea5e9", width=6, smooth=True)
+
+    def _draw_grid_roads(self, canvas_size: int) -> None:
+        grid = self.scenario.grid_size
+        if grid <= 3:
+            return
+        step = canvas_size / grid
+        for idx in range(1, grid):
+            x = int(step * idx)
+            y = int(step * idx)
+            self.canvas.create_line(
+                x, 0, x, canvas_size, fill="#1f2937", width=3, stipple="gray25"
+            )
+            self.canvas.create_line(
+                0, y, canvas_size, y, fill="#1f2937", width=3, stipple="gray25"
+            )
 
     def _draw_pump(self, x0: int, y0: int, size: int, color: str) -> None:
         base = size * 0.2
@@ -877,6 +896,7 @@ class BlackOilGame:
     def _draw_smokestack(self, x0: int, y0: int, size: int) -> None:
         if not self.refinery.active:
             return
+        drift = (self.fx_tick % 10) - 5
         self.canvas.create_rectangle(
             x0 + size * 0.75,
             y0 + size * 0.2,
@@ -887,10 +907,18 @@ class BlackOilGame:
         )
         puff_color = "#94a3b8" if self.day_phase % 2 == 0 else "#cbd5f5"
         self.canvas.create_oval(
-            x0 + size * 0.72,
+            x0 + size * 0.72 + drift,
             y0 + size * 0.12,
-            x0 + size * 0.9,
+            x0 + size * 0.9 + drift,
             y0 + size * 0.28,
+            fill=puff_color,
+            outline="",
+        )
+        self.canvas.create_oval(
+            x0 + size * 0.66 + drift,
+            y0 + size * 0.02,
+            x0 + size * 0.82 + drift,
+            y0 + size * 0.18,
             fill=puff_color,
             outline="",
         )
@@ -912,6 +940,18 @@ class BlackOilGame:
                 fill=color,
                 width=1,
                 stipple="gray25",
+            )
+        rng = random.Random(self.map_seed + int(x0 + y0))
+        for _ in range(2):
+            px = rng.randint(int(x0 + 2), int(x1 - 6))
+            py = rng.randint(int(y0 + 2), int(y1 - 6))
+            self.canvas.create_oval(
+                px,
+                py,
+                px + 4,
+                py + 4,
+                fill=color,
+                outline="",
             )
 
     def _terrain_for_tile(self, row: int, col: int) -> tuple[str, str]:
@@ -956,6 +996,8 @@ class BlackOilGame:
         canvas_size = self.tile_size * grid_size
         self.canvas.config(width=canvas_size, height=canvas_size)
         self._draw_background(canvas_size)
+
+        pulse = 1 + (self.fx_tick % 6) * 0.08
 
         for tile in self.tiles:
             x0 = tile.col * self.tile_size
@@ -1048,10 +1090,10 @@ class BlackOilGame:
 
             if tile is self.selected_tile:
                 self.canvas.create_rectangle(
-                    x0 + 3,
-                    y0 + 3,
-                    x1 - 3,
-                    y1 - 3,
+                    x0 + 3 - pulse,
+                    y0 + 3 - pulse,
+                    x1 - 3 + pulse,
+                    y1 - 3 + pulse,
                     outline="#fbbf24",
                     width=3,
                 )
@@ -1073,6 +1115,17 @@ class BlackOilGame:
                     text=f"L{tile.pump_level}",
                     fill="#f8fafc",
                     font=("Helvetica", 7, "bold"),
+                )
+
+            if tile.has_pump:
+                pulse = 1 + (self.fx_tick % 6) * 0.1
+                self.canvas.create_oval(
+                    x0 + self.tile_size * 0.72,
+                    y0 + self.tile_size * 0.08,
+                    x0 + self.tile_size * 0.72 + 6 * pulse,
+                    y0 + self.tile_size * 0.08 + 6 * pulse,
+                    fill="#fbbf24",
+                    outline="",
                 )
 
         for tile in self.tiles:
@@ -1163,6 +1216,17 @@ class BlackOilGame:
         self._draw_grid()
         self._update_buttons()
         self._update_competitor_panel()
+
+    def _start_fx_loop(self) -> None:
+        if self.fx_running:
+            return
+        self.fx_running = True
+        self._tick_fx()
+
+    def _tick_fx(self) -> None:
+        self.fx_tick = (self.fx_tick + 1) % 120
+        self._draw_grid()
+        self.root.after(180, self._tick_fx)
 
     def _update_competitor_panel(self) -> None:
         lines = ["Competitors:"]
