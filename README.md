@@ -9,6 +9,7 @@ A macOS-friendly, single-player strategy game inspired by Sierra's classic oil b
 - **Pump upgrades** to boost daily production.
 - **Refineries** that convert crude into petrol for higher margins.
 - **Contracts** that lock in delivery prices and deadlines.
+- **Trade market** deals with companies and nations for bulk sales.
 - **Loans** that help fund expansion (with interest).
 - **Research** to improve production efficiency and reduce upkeep.
 - **Transport hub** upgrades to boost contract payouts and reduce maintenance.
