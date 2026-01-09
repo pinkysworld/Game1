@@ -8,7 +8,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 OIL_PER_DAY_MIN = 6
 OIL_PER_DAY_MAX = 22
 MAX_PUMP_LEVEL = 3
-MAP_PIXEL_SIZE = 520
+MAP_PIXEL_SIZE = 560
 SURVEY_COST = 350
 PUMP_UPGRADE_COST = 700
 STORAGE_EXPANSION = 15
@@ -252,7 +252,7 @@ class BlackOilGame:
         self._new_game()
 
     def _build_ui(self) -> None:
-        self.root.geometry("1220x740")
+        self.root.geometry("1260x760")
         self.root.resizable(False, False)
 
         menubar = tk.Menu(self.root)
@@ -360,7 +360,7 @@ class BlackOilGame:
         )
         self.stats_label.pack(anchor="w", pady=(6, 4))
 
-        self.progress = ttk.Progressbar(panel, length=300, mode="determinate")
+        self.progress = ttk.Progressbar(panel, length=320, mode="determinate")
         self.progress.pack(anchor="w", pady=(2, 8))
 
         self.tile_label = tk.Label(
@@ -661,6 +661,8 @@ class BlackOilGame:
         for x, y, size, color in self.decorations:
             self.canvas.create_oval(x, y, x + size, y + size, fill=color, outline="")
 
+        self._draw_river(canvas_size)
+
         contour_color = "#0f172a"
         for i in range(4):
             offset = canvas_size * (0.15 + i * 0.18)
@@ -678,6 +680,21 @@ class BlackOilGame:
             self.canvas.create_rectangle(
                 0, 0, canvas_size, canvas_size, fill="#0b1120", stipple="gray50", outline=""
             )
+
+    def _draw_river(self, canvas_size: int) -> None:
+        rng = random.Random(self.map_seed)
+        points = []
+        x = rng.randint(int(canvas_size * 0.1), int(canvas_size * 0.2))
+        for step in range(7):
+            y = int(canvas_size * (step / 6))
+            x += rng.randint(-20, 25)
+            x = max(10, min(canvas_size - 10, x))
+            points.append((x, y))
+        for i in range(len(points) - 1):
+            x0, y0 = points[i]
+            x1, y1 = points[i + 1]
+            self.canvas.create_line(x0, y0, x1, y1, fill="#38bdf8", width=10, smooth=True)
+            self.canvas.create_line(x0, y0, x1, y1, fill="#0ea5e9", width=6, smooth=True)
 
     def _draw_pump(self, x0: int, y0: int, size: int, color: str) -> None:
         base = size * 0.2
@@ -850,6 +867,17 @@ class BlackOilGame:
                 stipple="gray25",
             )
 
+    def _terrain_for_tile(self, row: int, col: int) -> tuple[str, str]:
+        rng = random.Random(self.map_seed + row * 31 + col * 17)
+        roll = rng.random()
+        if roll < 0.18:
+            return "#0f766e", "#14b8a6"
+        if roll < 0.4:
+            return "#14532d", "#166534"
+        if roll < 0.65:
+            return "#4b5563", "#64748b"
+        return "#7c5c3f", "#8b6b4c"
+
     def _draw_pipeline(self, tile: Tile, size: int) -> None:
         if tile.owner != "player" or not tile.has_pump:
             return
@@ -877,7 +905,7 @@ class BlackOilGame:
     def _draw_grid(self) -> None:
         self.canvas.delete("all")
         grid_size = self.scenario.grid_size
-        self.tile_size = min(MAP_PIXEL_SIZE // grid_size, 90)
+        self.tile_size = min(MAP_PIXEL_SIZE // grid_size, 70)
         canvas_size = self.tile_size * grid_size
         self.canvas.config(width=canvas_size, height=canvas_size)
         self._draw_background(canvas_size)
@@ -887,7 +915,8 @@ class BlackOilGame:
             y0 = tile.row * self.tile_size
             x1 = x0 + self.tile_size
             y1 = y0 + self.tile_size
-            fill = self._owner_color(tile.owner)
+            terrain_fill, terrain_detail = self._terrain_for_tile(tile.row, tile.col)
+            fill = terrain_fill
             outline = "#334155"
             if tile.depleted and tile.owner:
                 fill = "#475569"
@@ -902,6 +931,14 @@ class BlackOilGame:
             )
             self.canvas.create_rectangle(x0, y0, x1, y1, fill=fill, outline=outline, width=2)
             self.canvas.create_rectangle(
+                x0 + 2,
+                y0 + 2,
+                x1 - 2,
+                y1 - 2,
+                outline=terrain_detail,
+                width=1,
+            )
+            self.canvas.create_rectangle(
                 x0 + 4,
                 y0 + 4,
                 x1 - 4,
@@ -909,7 +946,26 @@ class BlackOilGame:
                 outline="#94a3b8",
                 width=1,
             )
-            self._draw_tile_texture(x0 + 5, y0 + 5, x1 - 5, y1 - 5, tile.owner)
+            self._draw_tile_texture(x0 + 4, y0 + 4, x1 - 4, y1 - 4, None)
+            if tile.owner:
+                owner_color = self._owner_color(tile.owner)
+                self.canvas.create_rectangle(
+                    x0 + 3,
+                    y0 + 3,
+                    x1 - 3,
+                    y1 - 3,
+                    outline=owner_color,
+                    width=2,
+                )
+                self.canvas.create_rectangle(
+                    x0 + 3,
+                    y0 + 3,
+                    x1 - 3,
+                    y1 - 3,
+                    fill=owner_color,
+                    stipple="gray25",
+                    outline="",
+                )
 
             if tile.drilled:
                 self.canvas.create_oval(
