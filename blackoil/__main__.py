@@ -1,4 +1,4 @@
-from blackoil.ui_tk import launch
+from .ui_tk import launch
 
 
 if __name__ == "__main__":
