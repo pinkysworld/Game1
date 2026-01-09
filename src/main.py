@@ -240,6 +240,10 @@ class BlackOilGame:
         self.contracts: list[Contract] = []
         self.refinery = Refinery()
         self.transport_hub = TransportHub()
+        self.total_oil_produced = 0
+        self.total_petrol_refined = 0
+        self.total_contract_delivered = 0
+        self.day_phase = 0
         self.map_seed = random.randint(1000, 9999)
         self.decorations: list[tuple[int, int, int, str]] = []
 
@@ -266,6 +270,7 @@ class BlackOilGame:
 
         help_menu = tk.Menu(menubar, tearoff=0)
         help_menu.add_command(label="About", command=self.show_about)
+        help_menu.add_command(label="Statistics", command=self.show_statistics)
         menubar.add_cascade(label="Help", menu=help_menu)
 
         self.root.config(menu=menubar)
@@ -534,6 +539,10 @@ class BlackOilGame:
         self.contracts = []
         self.refinery = Refinery()
         self.transport_hub = TransportHub()
+        self.total_oil_produced = 0
+        self.total_petrol_refined = 0
+        self.total_contract_delivered = 0
+        self.day_phase = 0
         self.map_seed = random.randint(1000, 9999)
         self.decorations = self._create_decorations(self.map_seed)
         self.tiles = self._create_tiles()
@@ -617,15 +626,28 @@ class BlackOilGame:
                 color = ground
             self.canvas.create_rectangle(0, i, canvas_size, i + step, fill=color, outline="")
 
-        sun_size = canvas_size * 0.18
-        self.canvas.create_oval(
-            canvas_size * 0.68,
-            canvas_size * 0.08,
-            canvas_size * 0.68 + sun_size,
-            canvas_size * 0.08 + sun_size,
-            fill="#fde047",
-            outline="",
-        )
+        sun_size = canvas_size * 0.16
+        phase = (self.day_phase % 4) / 3
+        sun_x = canvas_size * (0.15 + 0.7 * phase)
+        sun_y = canvas_size * (0.08 + 0.08 * abs(0.5 - phase))
+        if self.day_phase % 4 < 3:
+            self.canvas.create_oval(
+                sun_x,
+                sun_y,
+                sun_x + sun_size,
+                sun_y + sun_size,
+                fill="#fde047",
+                outline="",
+            )
+        else:
+            self.canvas.create_oval(
+                sun_x,
+                sun_y,
+                sun_x + sun_size,
+                sun_y + sun_size,
+                fill="#e2e8f0",
+                outline="",
+            )
 
         cloud_color = "#e2e8f0"
         for i in range(3):
@@ -637,6 +659,11 @@ class BlackOilGame:
 
         for x, y, size, color in self.decorations:
             self.canvas.create_oval(x, y, x + size, y + size, fill=color, outline="")
+
+        if self.day_phase % 4 == 3:
+            self.canvas.create_rectangle(
+                0, 0, canvas_size, canvas_size, fill="#0b1120", stipple="gray50", outline=""
+            )
 
     def _draw_pump(self, x0: int, y0: int, size: int, color: str) -> None:
         base = size * 0.2
@@ -760,6 +787,35 @@ class BlackOilGame:
             fill="#f8fafc",
             font=("Helvetica", 8, "bold"),
         )
+        self.canvas.create_line(
+            x0 + size * 0.2,
+            y0 + size * 0.9,
+            x0 + size * 0.8,
+            y0 + size * 0.9,
+            fill="#38bdf8",
+            width=2,
+        )
+
+    def _draw_smokestack(self, x0: int, y0: int, size: int) -> None:
+        if not self.refinery.active:
+            return
+        self.canvas.create_rectangle(
+            x0 + size * 0.75,
+            y0 + size * 0.2,
+            x0 + size * 0.88,
+            y0 + size * 0.5,
+            fill="#475569",
+            outline="",
+        )
+        puff_color = "#94a3b8" if self.day_phase % 2 == 0 else "#cbd5f5"
+        self.canvas.create_oval(
+            x0 + size * 0.72,
+            y0 + size * 0.12,
+            x0 + size * 0.9,
+            y0 + size * 0.28,
+            fill=puff_color,
+            outline="",
+        )
 
     def _draw_tile_texture(self, x0: int, y0: int, x1: int, y1: int, owner: str | None) -> None:
         if owner == "player":
@@ -870,6 +926,8 @@ class BlackOilGame:
                 self._draw_rig(x0 + 6, y0 + 12, self.tile_size - 12, "#f8fafc")
             if tile.owner == "player" and tile.capacity > 20:
                 self._draw_storage_tank(x0 + 6, y0 + self.tile_size * 0.58, self.tile_size - 12, "#e2e8f0")
+            if tile.owner == "player" and tile.has_pump and self.refinery.active:
+                self._draw_smokestack(x0 + 6, y0 + 12, self.tile_size - 12)
 
             if tile is self.selected_tile:
                 self.canvas.create_rectangle(
@@ -1044,6 +1102,15 @@ class BlackOilGame:
             "Black Oil - Frontier Drilling\n"
             "A strategy prototype inspired by classic oil boom simulations.\n"
             "Manage wells, refineries, contracts, and market swings.",
+        )
+
+    def show_statistics(self) -> None:
+        messagebox.showinfo(
+            "Company Statistics",
+            "Total Production Summary\n"
+            f"- Oil Produced: {self.total_oil_produced} barrels\n"
+            f"- Petrol Refined: {self.total_petrol_refined} barrels\n"
+            f"- Contract Delivered: {self.total_contract_delivered} barrels\n",
         )
 
     def _on_canvas_click(self, event: tk.Event) -> None:
@@ -1331,6 +1398,7 @@ class BlackOilGame:
         self._daily_maintenance()
         self._apply_interest()
         self._refresh_news()
+        self.day_phase = (self.day_phase + 1) % 4
         self._refresh_ui()
 
         if self.day == self.scenario.max_days:
@@ -1352,6 +1420,7 @@ class BlackOilGame:
                 output = min(output, tile.reserve, tile.available_capacity)
                 tile.reserve -= output
                 tile.storage += output
+                self.total_oil_produced += output
                 if tile.reserve == 0:
                     self._log(
                         f"Well at ({tile.row + 1}, {tile.col + 1}) ran dry. Storage holds {tile.storage} barrels."
@@ -1367,6 +1436,7 @@ class BlackOilGame:
         refine_amount = min(available_oil, capacity)
         self._withdraw_oil(refine_amount)
         self.petrol_storage += refine_amount
+        self.total_petrol_refined += refine_amount
         self._log(f"Refined {refine_amount} barrels into petrol.")
 
     def _withdraw_oil(self, amount: int) -> None:
@@ -1428,6 +1498,7 @@ class BlackOilGame:
             if deliverable > 0:
                 self._withdraw_oil(deliverable)
                 contract.delivered += deliverable
+                self.total_contract_delivered += deliverable
                 bonus = 1 + self.transport_hub.delivery_bonus
                 revenue = int(deliverable * contract.price * bonus)
                 self.cash += revenue
@@ -1524,6 +1595,10 @@ class BlackOilGame:
             "petrol_storage": self.petrol_storage,
             "refinery": {"level": self.refinery.level, "capacity": self.refinery.capacity},
             "transport_hub": {"level": self.transport_hub.level},
+            "total_oil_produced": self.total_oil_produced,
+            "total_petrol_refined": self.total_petrol_refined,
+            "total_contract_delivered": self.total_contract_delivered,
+            "day_phase": self.day_phase,
             "contracts": [
                 {
                     "name": contract.name,
@@ -1593,6 +1668,10 @@ class BlackOilGame:
         )
         hub_data = data.get("transport_hub", {})
         self.transport_hub = TransportHub(level=hub_data.get("level", 0))
+        self.total_oil_produced = data.get("total_oil_produced", 0)
+        self.total_petrol_refined = data.get("total_petrol_refined", 0)
+        self.total_contract_delivered = data.get("total_contract_delivered", 0)
+        self.day_phase = data.get("day_phase", 0)
         self.contracts = [
             Contract(
                 name=item["name"],

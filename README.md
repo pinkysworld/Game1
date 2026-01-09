@@ -12,6 +12,7 @@ A macOS-friendly, single-player strategy game inspired by Sierra's classic oil b
 - **Loans** that help fund expansion (with interest).
 - **Research** to improve production efficiency and reduce upkeep.
 - **Transport hub** upgrades to boost contract payouts and reduce maintenance.
+- **Company statistics** tracked across production and deliveries.
 - **Save & load** support to continue your campaign later.
 - **Styled map visuals** with themed backdrops and pump indicators.
 - **Sound effects** with a toggle to mute or enable audio cues.
