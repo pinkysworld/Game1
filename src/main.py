@@ -22,6 +22,9 @@ REFINERY_UPGRADE_COST = 1800
 REFINERY_BASE_CAPACITY = 40
 PETROL_PRICE_MIN = 55
 PETROL_PRICE_MAX = 160
+HUB_BUILD_COST = 1800
+HUB_UPGRADE_COST = 900
+HUB_MAX_LEVEL = 3
 
 
 @dataclass
@@ -108,6 +111,23 @@ class Refinery:
     @property
     def active(self) -> bool:
         return self.level > 0
+
+
+@dataclass
+class TransportHub:
+    level: int = 0
+
+    @property
+    def active(self) -> bool:
+        return self.level > 0
+
+    @property
+    def delivery_bonus(self) -> float:
+        return 0.05 * self.level
+
+    @property
+    def maintenance_discount(self) -> float:
+        return 0.03 * self.level
 
 
 class Tooltip:
@@ -219,6 +239,11 @@ class BlackOilGame:
         self.petrol_storage = 0
         self.contracts: list[Contract] = []
         self.refinery = Refinery()
+        self.transport_hub = TransportHub()
+        self.total_oil_produced = 0
+        self.total_petrol_refined = 0
+        self.total_contract_delivered = 0
+        self.day_phase = 0
         self.map_seed = random.randint(1000, 9999)
         self.decorations: list[tuple[int, int, int, str]] = []
 
@@ -245,6 +270,7 @@ class BlackOilGame:
 
         help_menu = tk.Menu(menubar, tearoff=0)
         help_menu.add_command(label="About", command=self.show_about)
+        help_menu.add_command(label="Statistics", command=self.show_statistics)
         menubar.add_cascade(label="Help", menu=help_menu)
 
         self.root.config(menu=menubar)
@@ -384,18 +410,28 @@ class BlackOilGame:
         )
         self.research_button.grid(row=8, column=0, pady=2)
 
+        self.hub_button = tk.Button(
+            action_frame, text="Build Transport Hub", command=self.build_hub, width=20
+        )
+        self.hub_button.grid(row=9, column=0, pady=2)
+
+        self.upgrade_hub_button = tk.Button(
+            action_frame, text="Upgrade Transport Hub", command=self.upgrade_hub, width=20
+        )
+        self.upgrade_hub_button.grid(row=10, column=0, pady=2)
+
         self.sell_button = tk.Button(action_frame, text="Sell Oil", command=self.sell_oil, width=20)
-        self.sell_button.grid(row=9, column=0, pady=2)
+        self.sell_button.grid(row=11, column=0, pady=2)
 
         self.sell_petrol_button = tk.Button(
             action_frame, text="Sell Petrol", command=self.sell_petrol, width=20
         )
-        self.sell_petrol_button.grid(row=10, column=0, pady=2)
+        self.sell_petrol_button.grid(row=12, column=0, pady=2)
 
         self.contract_button = tk.Button(
             action_frame, text="Contracts", command=self.manage_contracts, width=20
         )
-        self.contract_button.grid(row=11, column=0, pady=2)
+        self.contract_button.grid(row=13, column=0, pady=2)
 
         self.next_day_button = tk.Button(panel, text="Advance Day", command=self.next_day, width=20)
         self.next_day_button.pack(anchor="w", pady=(10, 4))
@@ -471,6 +507,8 @@ class BlackOilGame:
             self.refinery_button: "Build a refinery to convert oil into petrol.",
             self.upgrade_refinery_button: "Increase refinery capacity.",
             self.research_button: "Improve efficiency and reduce upkeep.",
+            self.hub_button: "Build a transport hub to boost deliveries.",
+            self.upgrade_hub_button: "Upgrade hub for better delivery bonuses.",
             self.sell_button: "Sell all stored oil at market price.",
             self.sell_petrol_button: "Sell refined petrol at market price.",
             self.contract_button: "Review and sign delivery contracts.",
@@ -500,6 +538,11 @@ class BlackOilGame:
         self.petrol_storage = 0
         self.contracts = []
         self.refinery = Refinery()
+        self.transport_hub = TransportHub()
+        self.total_oil_produced = 0
+        self.total_petrol_refined = 0
+        self.total_contract_delivered = 0
+        self.day_phase = 0
         self.map_seed = random.randint(1000, 9999)
         self.decorations = self._create_decorations(self.map_seed)
         self.tiles = self._create_tiles()
@@ -583,15 +626,28 @@ class BlackOilGame:
                 color = ground
             self.canvas.create_rectangle(0, i, canvas_size, i + step, fill=color, outline="")
 
-        sun_size = canvas_size * 0.18
-        self.canvas.create_oval(
-            canvas_size * 0.68,
-            canvas_size * 0.08,
-            canvas_size * 0.68 + sun_size,
-            canvas_size * 0.08 + sun_size,
-            fill="#fde047",
-            outline="",
-        )
+        sun_size = canvas_size * 0.16
+        phase = (self.day_phase % 4) / 3
+        sun_x = canvas_size * (0.15 + 0.7 * phase)
+        sun_y = canvas_size * (0.08 + 0.08 * abs(0.5 - phase))
+        if self.day_phase % 4 < 3:
+            self.canvas.create_oval(
+                sun_x,
+                sun_y,
+                sun_x + sun_size,
+                sun_y + sun_size,
+                fill="#fde047",
+                outline="",
+            )
+        else:
+            self.canvas.create_oval(
+                sun_x,
+                sun_y,
+                sun_x + sun_size,
+                sun_y + sun_size,
+                fill="#e2e8f0",
+                outline="",
+            )
 
         cloud_color = "#e2e8f0"
         for i in range(3):
@@ -603,6 +659,11 @@ class BlackOilGame:
 
         for x, y, size, color in self.decorations:
             self.canvas.create_oval(x, y, x + size, y + size, fill=color, outline="")
+
+        if self.day_phase % 4 == 3:
+            self.canvas.create_rectangle(
+                0, 0, canvas_size, canvas_size, fill="#0b1120", stipple="gray50", outline=""
+            )
 
     def _draw_pump(self, x0: int, y0: int, size: int, color: str) -> None:
         base = size * 0.2
@@ -694,6 +755,87 @@ class BlackOilGame:
             outline="",
         )
 
+    def _draw_hub(self, canvas_size: int) -> None:
+        if not self.transport_hub.active:
+            return
+        size = max(50, canvas_size * 0.18)
+        x0 = canvas_size - size - 8
+        y0 = canvas_size - size - 8
+        self.canvas.create_rectangle(x0, y0, x0 + size, y0 + size, fill="#1f2937", outline="#94a3b8")
+        self.canvas.create_polygon(
+            x0 + size * 0.15,
+            y0 + size * 0.25,
+            x0 + size * 0.5,
+            y0 + size * 0.05,
+            x0 + size * 0.85,
+            y0 + size * 0.25,
+            fill="#475569",
+            outline="",
+        )
+        self.canvas.create_rectangle(
+            x0 + size * 0.25,
+            y0 + size * 0.35,
+            x0 + size * 0.75,
+            y0 + size * 0.8,
+            fill="#0f172a",
+            outline="",
+        )
+        self.canvas.create_text(
+            x0 + size / 2,
+            y0 + size * 0.62,
+            text=f"HUB {self.transport_hub.level}",
+            fill="#f8fafc",
+            font=("Helvetica", 8, "bold"),
+        )
+        self.canvas.create_line(
+            x0 + size * 0.2,
+            y0 + size * 0.9,
+            x0 + size * 0.8,
+            y0 + size * 0.9,
+            fill="#38bdf8",
+            width=2,
+        )
+
+    def _draw_smokestack(self, x0: int, y0: int, size: int) -> None:
+        if not self.refinery.active:
+            return
+        self.canvas.create_rectangle(
+            x0 + size * 0.75,
+            y0 + size * 0.2,
+            x0 + size * 0.88,
+            y0 + size * 0.5,
+            fill="#475569",
+            outline="",
+        )
+        puff_color = "#94a3b8" if self.day_phase % 2 == 0 else "#cbd5f5"
+        self.canvas.create_oval(
+            x0 + size * 0.72,
+            y0 + size * 0.12,
+            x0 + size * 0.9,
+            y0 + size * 0.28,
+            fill=puff_color,
+            outline="",
+        )
+
+    def _draw_tile_texture(self, x0: int, y0: int, x1: int, y1: int, owner: str | None) -> None:
+        if owner == "player":
+            color = "#22c55e"
+        elif owner:
+            color = "#f97316"
+        else:
+            color = "#64748b"
+        step = 10
+        for offset in range(0, int(x1 - x0), step):
+            self.canvas.create_line(
+                x0 + offset,
+                y1,
+                x0,
+                y1 - offset,
+                fill=color,
+                width=1,
+                stipple="gray25",
+            )
+
     def _draw_pipeline(self, tile: Tile, size: int) -> None:
         if tile.owner != "player" or not tile.has_pump:
             return
@@ -753,6 +895,7 @@ class BlackOilGame:
                 outline="#94a3b8",
                 width=1,
             )
+            self._draw_tile_texture(x0 + 6, y0 + 6, x1 - 6, y1 - 6, tile.owner)
 
             if tile.drilled:
                 self.canvas.create_oval(
@@ -783,6 +926,8 @@ class BlackOilGame:
                 self._draw_rig(x0 + 6, y0 + 12, self.tile_size - 12, "#f8fafc")
             if tile.owner == "player" and tile.capacity > 20:
                 self._draw_storage_tank(x0 + 6, y0 + self.tile_size * 0.58, self.tile_size - 12, "#e2e8f0")
+            if tile.owner == "player" and tile.has_pump and self.refinery.active:
+                self._draw_smokestack(x0 + 6, y0 + 12, self.tile_size - 12)
 
             if tile is self.selected_tile:
                 self.canvas.create_rectangle(
@@ -815,6 +960,7 @@ class BlackOilGame:
 
         for tile in self.tiles:
             self._draw_pipeline(tile, self.tile_size)
+        self._draw_hub(canvas_size)
 
     def _update_buttons(self) -> None:
         tile = self.selected_tile
@@ -843,6 +989,12 @@ class BlackOilGame:
             state=tk.NORMAL if self.refinery.active else tk.DISABLED
         )
         self.research_button.config(state=tk.NORMAL if self.cash >= RESEARCH_COST else tk.DISABLED)
+        self.hub_button.config(state=tk.NORMAL if not self.transport_hub.active else tk.DISABLED)
+        self.upgrade_hub_button.config(
+            state=tk.NORMAL
+            if self.transport_hub.active and self.transport_hub.level < HUB_MAX_LEVEL
+            else tk.DISABLED
+        )
         self.sell_button.config(state=tk.NORMAL if self._total_storage("player") > 0 else tk.DISABLED)
         self.sell_petrol_button.config(state=tk.NORMAL if self.petrol_storage > 0 else tk.DISABLED)
 
@@ -859,6 +1011,7 @@ class BlackOilGame:
                 f"Refinery: {'Online' if self.refinery.active else 'Offline'} "
                 f"(Cap {self.refinery.capacity})\n"
                 f"Research Level: {self.research_level}\n"
+                f"Transport Hub: {self.transport_hub.level}/{HUB_MAX_LEVEL}\n"
                 f"Loan Balance: ${self.loan_balance:,}\n"
                 f"Event: {self.event_message or 'None'}"
             )
@@ -949,6 +1102,15 @@ class BlackOilGame:
             "Black Oil - Frontier Drilling\n"
             "A strategy prototype inspired by classic oil boom simulations.\n"
             "Manage wells, refineries, contracts, and market swings.",
+        )
+
+    def show_statistics(self) -> None:
+        messagebox.showinfo(
+            "Company Statistics",
+            "Total Production Summary\n"
+            f"- Oil Produced: {self.total_oil_produced} barrels\n"
+            f"- Petrol Refined: {self.total_petrol_refined} barrels\n"
+            f"- Contract Delivered: {self.total_contract_delivered} barrels\n",
         )
 
     def _on_canvas_click(self, event: tk.Event) -> None:
@@ -1069,6 +1231,32 @@ class BlackOilGame:
         self.cash -= self.scenario.storage_cost
         self._log(f"Added storage on tile ({tile.row + 1}, {tile.col + 1}).")
         self._play_sound("build")
+        self._refresh_ui()
+
+    def build_hub(self) -> None:
+        if self.transport_hub.active:
+            return
+        if self.cash < HUB_BUILD_COST:
+            messagebox.showinfo("Insufficient Cash", "You need more cash to build a transport hub.")
+            self._play_sound("error")
+            return
+        self.cash -= HUB_BUILD_COST
+        self.transport_hub.level = 1
+        self._log("Transport hub constructed. Contract deliveries earn bonuses.")
+        self._play_sound("build")
+        self._refresh_ui()
+
+    def upgrade_hub(self) -> None:
+        if not self.transport_hub.active or self.transport_hub.level >= HUB_MAX_LEVEL:
+            return
+        if self.cash < HUB_UPGRADE_COST:
+            messagebox.showinfo("Insufficient Cash", "You need more cash to upgrade the hub.")
+            self._play_sound("error")
+            return
+        self.cash -= HUB_UPGRADE_COST
+        self.transport_hub.level += 1
+        self._log(f"Transport hub upgraded to level {self.transport_hub.level}.")
+        self._play_sound("upgrade")
         self._refresh_ui()
 
     def build_refinery(self) -> None:
@@ -1210,6 +1398,7 @@ class BlackOilGame:
         self._daily_maintenance()
         self._apply_interest()
         self._refresh_news()
+        self.day_phase = (self.day_phase + 1) % 4
         self._refresh_ui()
 
         if self.day == self.scenario.max_days:
@@ -1231,6 +1420,7 @@ class BlackOilGame:
                 output = min(output, tile.reserve, tile.available_capacity)
                 tile.reserve -= output
                 tile.storage += output
+                self.total_oil_produced += output
                 if tile.reserve == 0:
                     self._log(
                         f"Well at ({tile.row + 1}, {tile.col + 1}) ran dry. Storage holds {tile.storage} barrels."
@@ -1246,6 +1436,7 @@ class BlackOilGame:
         refine_amount = min(available_oil, capacity)
         self._withdraw_oil(refine_amount)
         self.petrol_storage += refine_amount
+        self.total_petrol_refined += refine_amount
         self._log(f"Refined {refine_amount} barrels into petrol.")
 
     def _withdraw_oil(self, amount: int) -> None:
@@ -1307,7 +1498,9 @@ class BlackOilGame:
             if deliverable > 0:
                 self._withdraw_oil(deliverable)
                 contract.delivered += deliverable
-                revenue = deliverable * contract.price
+                self.total_contract_delivered += deliverable
+                bonus = 1 + self.transport_hub.delivery_bonus
+                revenue = int(deliverable * contract.price * bonus)
                 self.cash += revenue
                 self._log(f"Delivered {deliverable} barrels to {contract.name} for ${revenue}.")
             contract.days_remaining -= 1
@@ -1321,8 +1514,8 @@ class BlackOilGame:
         pump_count = sum(1 for tile in self._owned_tiles("player") if tile.has_pump)
         refinery_cost = MAINTENANCE_COST if self.refinery.active else 0
         base = MAINTENANCE_COST + refinery_cost + pump_count * 15
-        efficiency = 1 - min(0.3, self.research_level * 0.03)
-        cost = int(base * efficiency)
+        efficiency = 1 - min(0.3, self.research_level * 0.03) - self.transport_hub.maintenance_discount
+        cost = int(max(0.5, efficiency) * base)
         if cost > 0:
             self.cash = max(0, self.cash - cost)
             self._log(f"Maintenance costs: ${cost}.")
@@ -1401,6 +1594,11 @@ class BlackOilGame:
             "petrol_price": self.petrol_price,
             "petrol_storage": self.petrol_storage,
             "refinery": {"level": self.refinery.level, "capacity": self.refinery.capacity},
+            "transport_hub": {"level": self.transport_hub.level},
+            "total_oil_produced": self.total_oil_produced,
+            "total_petrol_refined": self.total_petrol_refined,
+            "total_contract_delivered": self.total_contract_delivered,
+            "day_phase": self.day_phase,
             "contracts": [
                 {
                     "name": contract.name,
@@ -1468,6 +1666,12 @@ class BlackOilGame:
             level=refinery_data.get("level", 0),
             capacity=refinery_data.get("capacity", 0),
         )
+        hub_data = data.get("transport_hub", {})
+        self.transport_hub = TransportHub(level=hub_data.get("level", 0))
+        self.total_oil_produced = data.get("total_oil_produced", 0)
+        self.total_petrol_refined = data.get("total_petrol_refined", 0)
+        self.total_contract_delivered = data.get("total_contract_delivered", 0)
+        self.day_phase = data.get("day_phase", 0)
         self.contracts = [
             Contract(
                 name=item["name"],
