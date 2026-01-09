@@ -3,7 +3,7 @@ import random
 import tkinter as tk
 from dataclasses import dataclass
 from pathlib import Path
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, ttk
 
 OIL_PER_DAY_MIN = 6
 OIL_PER_DAY_MAX = 22
@@ -145,6 +145,7 @@ class BlackOilGame:
         self.loan_balance = 0
         self.loan_limit = DEFAULT_LOAN_LIMIT
         self.loan_rate = DEFAULT_LOAN_RATE
+        self.sound_enabled = True
         self.map_seed = random.randint(1000, 9999)
         self.decorations: list[tuple[int, int, int, str]] = []
 
@@ -299,6 +300,11 @@ class BlackOilGame:
         self.load_button = tk.Button(save_load_frame, text="Load Game", command=self.load_game, width=9)
         self.load_button.grid(row=0, column=1)
 
+        self.sound_button = tk.Button(
+            panel, text="Sound: On", command=self.toggle_sound, width=20, bg="#1f2937", fg="#f8fafc"
+        )
+        self.sound_button.pack(anchor="w", pady=(2, 8))
+
         self.competitor_label = tk.Label(
             panel,
             text="",
@@ -374,7 +380,7 @@ class BlackOilGame:
         rng = random.Random(seed)
         decorations = []
         grid = self.scenario.grid_size
-        for _ in range(grid * grid * 2):
+        for _ in range(grid * grid * 3):
             x = rng.randint(0, 599)
             y = rng.randint(0, 599)
             size = rng.randint(4, 12)
@@ -398,19 +404,42 @@ class BlackOilGame:
                 return competitor.color
         return "#1f2937"
 
-    def _theme_palette(self) -> tuple[str, str]:
+    def _theme_palette(self) -> tuple[str, str, str]:
         if self.scenario.theme == "desert":
-            return "#1f2937", "#3f2c1c"
+            return "#fde68a", "#f59e0b", "#92400e"
         if self.scenario.theme == "coastal":
-            return "#0f172a", "#0f766e"
-        return "#0f172a", "#1f2937"
+            return "#93c5fd", "#38bdf8", "#0f766e"
+        return "#a7f3d0", "#38bdf8", "#1f2937"
 
     def _draw_background(self, canvas_size: int) -> None:
-        base, accent = self._theme_palette()
-        step = 20
+        sky, mid, ground = self._theme_palette()
+        step = max(8, canvas_size // 30)
         for i in range(0, canvas_size, step):
-            color = base if i % (step * 2) == 0 else accent
+            ratio = i / canvas_size
+            if ratio < 0.6:
+                color = sky if i % (step * 2) == 0 else mid
+            else:
+                color = ground
             self.canvas.create_rectangle(0, i, canvas_size, i + step, fill=color, outline="")
+
+        sun_size = canvas_size * 0.18
+        self.canvas.create_oval(
+            canvas_size * 0.68,
+            canvas_size * 0.08,
+            canvas_size * 0.68 + sun_size,
+            canvas_size * 0.08 + sun_size,
+            fill="#fde047",
+            outline="",
+        )
+
+        cloud_color = "#e2e8f0"
+        for i in range(3):
+            x = canvas_size * (0.12 + i * 0.2)
+            y = canvas_size * (0.12 + i * 0.05)
+            self.canvas.create_oval(x, y, x + 50, y + 25, fill=cloud_color, outline="")
+            self.canvas.create_oval(x + 20, y - 10, x + 60, y + 20, fill=cloud_color, outline="")
+            self.canvas.create_oval(x + 40, y, x + 80, y + 28, fill=cloud_color, outline="")
+
         for x, y, size, color in self.decorations:
             self.canvas.create_oval(x, y, x + size, y + size, fill=color, outline="")
 
@@ -598,6 +627,22 @@ class BlackOilGame:
         self.log.see(tk.END)
         self.log.config(state=tk.DISABLED)
 
+    def _play_sound(self, action: str) -> None:
+        if not self.sound_enabled:
+            return
+        if action in {"buy", "sell", "loan"}:
+            self.root.bell()
+        elif action in {"error"}:
+            self.root.bell()
+            self.root.bell()
+        else:
+            self.root.bell()
+
+    def toggle_sound(self) -> None:
+        self.sound_enabled = not self.sound_enabled
+        label = "On" if self.sound_enabled else "Off"
+        self.sound_button.config(text=f"Sound: {label}")
+
     def _on_canvas_click(self, event: tk.Event) -> None:
         tile = self._tile_at(event.x, event.y)
         if tile:
@@ -618,10 +663,12 @@ class BlackOilGame:
             return
         if self.cash < self.scenario.land_cost:
             messagebox.showinfo("Insufficient Cash", "You need more cash to buy this land.")
+            self._play_sound("error")
             return
         tile.owner = "player"
         self.cash -= self.scenario.land_cost
         self._log(f"Bought land at ({tile.row + 1}, {tile.col + 1}) for ${self.scenario.land_cost}.")
+        self._play_sound("buy")
         self._refresh_ui()
 
     def survey_tile(self) -> None:
@@ -632,6 +679,7 @@ class BlackOilGame:
             return
         if self.cash < SURVEY_COST:
             messagebox.showinfo("Insufficient Cash", "You need more cash to run a survey.")
+            self._play_sound("error")
             return
         self.cash -= SURVEY_COST
         if tile.reserve <= 0:
@@ -643,6 +691,7 @@ class BlackOilGame:
         tile.survey_low = low
         tile.survey_high = high
         self._log(f"Survey complete for ({tile.row + 1}, {tile.col + 1}).")
+        self._play_sound("survey")
         self._refresh_ui()
 
     def drill_well(self) -> None:
@@ -653,6 +702,7 @@ class BlackOilGame:
             return
         if self.cash < self.scenario.drill_cost:
             messagebox.showinfo("Insufficient Cash", "You need more cash to drill here.")
+            self._play_sound("error")
             return
         tile.drilled = True
         self.cash -= self.scenario.drill_cost
@@ -660,6 +710,7 @@ class BlackOilGame:
             self._log("Dry well! No oil in this tile.")
         else:
             self._log(f"Drilled well. Estimated reserves: {tile.reserve} barrels.")
+        self._play_sound("drill")
         self._refresh_ui()
 
     def build_pump(self) -> None:
@@ -670,10 +721,12 @@ class BlackOilGame:
             return
         if self.cash < self.scenario.pump_cost:
             messagebox.showinfo("Insufficient Cash", "You need more cash to build a pump.")
+            self._play_sound("error")
             return
         tile.pump_level = 1
         self.cash -= self.scenario.pump_cost
         self._log("Pump installed. Production will start next day.")
+        self._play_sound("build")
         self._refresh_ui()
 
     def upgrade_pump(self) -> None:
@@ -686,10 +739,12 @@ class BlackOilGame:
             return
         if self.cash < PUMP_UPGRADE_COST:
             messagebox.showinfo("Insufficient Cash", "You need more cash to upgrade the pump.")
+            self._play_sound("error")
             return
         tile.pump_level += 1
         self.cash -= PUMP_UPGRADE_COST
         self._log(f"Pump upgraded to level {tile.pump_level}.")
+        self._play_sound("upgrade")
         self._refresh_ui()
 
     def add_storage(self) -> None:
@@ -700,10 +755,12 @@ class BlackOilGame:
             return
         if self.cash < self.scenario.storage_cost:
             messagebox.showinfo("Insufficient Cash", "You need more cash to expand storage.")
+            self._play_sound("error")
             return
         tile.capacity += STORAGE_EXPANSION
         self.cash -= self.scenario.storage_cost
         self._log(f"Added storage on tile ({tile.row + 1}, {tile.col + 1}).")
+        self._play_sound("build")
         self._refresh_ui()
 
     def sell_oil(self) -> None:
@@ -715,16 +772,19 @@ class BlackOilGame:
         for tile in self._owned_tiles("player"):
             tile.storage = 0
         self._log(f"Sold {total_storage} barrels for ${revenue}.")
+        self._play_sound("sell")
         self._refresh_ui()
 
     def take_loan(self) -> None:
         if self.loan_balance >= self.loan_limit:
             messagebox.showinfo("Loan Limit", "You have reached the loan limit.")
+            self._play_sound("error")
             return
         amount = min(LOAN_CHUNK, self.loan_limit - self.loan_balance)
         self.cash += amount
         self.loan_balance += amount
         self._log(f"Took a loan for ${amount}.")
+        self._play_sound("loan")
         self._refresh_ui()
 
     def repay_loan(self) -> None:
@@ -733,10 +793,12 @@ class BlackOilGame:
         amount = min(LOAN_CHUNK, self.loan_balance)
         if self.cash < amount:
             messagebox.showinfo("Insufficient Cash", "You need more cash to repay the loan.")
+            self._play_sound("error")
             return
         self.cash -= amount
         self.loan_balance -= amount
         self._log(f"Repaid ${amount} of loans.")
+        self._play_sound("loan")
         self._refresh_ui()
 
     def next_day(self) -> None:
@@ -745,6 +807,7 @@ class BlackOilGame:
             return
 
         self.day += 1
+        self._play_sound("advance")
         self._apply_market()
         self._produce_oil()
         self._competitor_turns()
@@ -903,6 +966,7 @@ class BlackOilGame:
         }
         Path(path).write_text(json.dumps(data, indent=2), encoding="utf-8")
         self._log(f"Game saved to {path}.")
+        self._play_sound("save")
 
     def load_game(self) -> None:
         path = filedialog.askopenfilename(filetypes=[("Black Oil Save", "*.json")])
@@ -958,6 +1022,7 @@ class BlackOilGame:
         self.selected_tile = None
         self._reset_log()
         self._log(f"Game loaded from {path}.")
+        self._play_sound("load")
         self._refresh_ui()
 
 

@@ -10,6 +10,7 @@ A macOS-friendly, single-player strategy game inspired by Sierra's classic oil b
 - **Loans** that help fund expansion (with interest).
 - **Save & load** support to continue your campaign later.
 - **Styled map visuals** with themed backdrops and pump indicators.
+- **Sound effects** with a toggle to mute or enable audio cues.
 
 ## Controls
 - Click a tile on the map to select it.
