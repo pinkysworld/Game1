@@ -8,6 +8,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 OIL_PER_DAY_MIN = 6
 OIL_PER_DAY_MAX = 22
 MAX_PUMP_LEVEL = 3
+MAP_PIXEL_SIZE = 560
 SURVEY_COST = 350
 PUMP_UPGRADE_COST = 700
 STORAGE_EXPANSION = 15
@@ -25,6 +26,13 @@ PETROL_PRICE_MAX = 160
 HUB_BUILD_COST = 1800
 HUB_UPGRADE_COST = 900
 HUB_MAX_LEVEL = 3
+BASE_DEMAND = 120
+DEMAND_VARIANCE = 45
+MARKET_TREND_MAX = 2.5
+MARKET_IMPACT = 0.35
+TRADE_MIN_VOLUME = 20
+TRADE_MAX_VOLUME = 120
+REPUTATION_MAX = 5
 
 
 @dataclass
@@ -85,6 +93,8 @@ class Competitor:
     aggressiveness: float
     color: str
     storage_threshold: int
+    risk_tolerance: float
+    discipline: float
 
     def will_expand(self) -> bool:
         return random.random() < self.aggressiveness
@@ -128,6 +138,19 @@ class TransportHub:
     @property
     def maintenance_discount(self) -> float:
         return 0.03 * self.level
+
+
+@dataclass
+class Buyer:
+    name: str
+    category: str
+    demand: int
+    multiplier: float
+    reputation: int = 0
+
+    def price_for(self, market_price: int) -> int:
+        bonus = 1 + (self.reputation * 0.02)
+        return max(1, int(market_price * self.multiplier * bonus))
 
 
 class Tooltip:
@@ -244,14 +267,22 @@ class BlackOilGame:
         self.total_petrol_refined = 0
         self.total_contract_delivered = 0
         self.day_phase = 0
+        self.market_trend = 0.0
+        self.market_supply = 0
+        self.market_demand = BASE_DEMAND
+        self.last_day_production = 0
+        self.buyers: list[Buyer] = []
+        self.fx_tick = 0
+        self.fx_running = False
         self.map_seed = random.randint(1000, 9999)
         self.decorations: list[tuple[int, int, int, str]] = []
 
         self._build_ui()
         self._new_game()
+        self._start_fx_loop()
 
     def _build_ui(self) -> None:
-        self.root.geometry("1120x670")
+        self.root.geometry("1260x760")
         self.root.resizable(False, False)
 
         menubar = tk.Menu(self.root)
@@ -280,15 +311,15 @@ class BlackOilGame:
 
         self.canvas = tk.Canvas(
             main_frame,
-            width=620,
-            height=620,
+            width=MAP_PIXEL_SIZE,
+            height=MAP_PIXEL_SIZE,
             bg="#0b1120",
             highlightthickness=0,
         )
         self.canvas.grid(row=0, column=0, padx=16, pady=16)
         self.canvas.bind("<Button-1>", self._on_canvas_click)
 
-        panel = tk.Frame(main_frame, width=400, bg="#0b1120")
+        panel = tk.Frame(main_frame, width=420, bg="#0b1120")
         panel.grid(row=0, column=1, sticky="n", padx=(0, 16), pady=16)
 
         header = tk.Frame(panel, bg="#0b1120")
@@ -359,7 +390,7 @@ class BlackOilGame:
         )
         self.stats_label.pack(anchor="w", pady=(6, 4))
 
-        self.progress = ttk.Progressbar(panel, length=260, mode="determinate")
+        self.progress = ttk.Progressbar(panel, length=320, mode="determinate")
         self.progress.pack(anchor="w", pady=(2, 8))
 
         self.tile_label = tk.Label(
@@ -420,18 +451,23 @@ class BlackOilGame:
         )
         self.upgrade_hub_button.grid(row=10, column=0, pady=2)
 
+        self.trade_button = tk.Button(
+            action_frame, text="Trade Market", command=self.trade_market, width=20
+        )
+        self.trade_button.grid(row=11, column=0, pady=2)
+
         self.sell_button = tk.Button(action_frame, text="Sell Oil", command=self.sell_oil, width=20)
-        self.sell_button.grid(row=11, column=0, pady=2)
+        self.sell_button.grid(row=12, column=0, pady=2)
 
         self.sell_petrol_button = tk.Button(
             action_frame, text="Sell Petrol", command=self.sell_petrol, width=20
         )
-        self.sell_petrol_button.grid(row=12, column=0, pady=2)
+        self.sell_petrol_button.grid(row=13, column=0, pady=2)
 
         self.contract_button = tk.Button(
             action_frame, text="Contracts", command=self.manage_contracts, width=20
         )
-        self.contract_button.grid(row=13, column=0, pady=2)
+        self.contract_button.grid(row=14, column=0, pady=2)
 
         self.next_day_button = tk.Button(panel, text="Advance Day", command=self.next_day, width=20)
         self.next_day_button.pack(anchor="w", pady=(10, 4))
@@ -490,7 +526,7 @@ class BlackOilGame:
         )
         self.news_label.pack(anchor="w", pady=(4, 6))
 
-        self.log = tk.Text(panel, width=42, height=12, state=tk.DISABLED, font=("Helvetica", 9))
+        self.log = tk.Text(panel, width=44, height=14, state=tk.DISABLED, font=("Helvetica", 9))
         self.log.pack(anchor="w")
 
         self._install_tooltips()
@@ -509,6 +545,7 @@ class BlackOilGame:
             self.research_button: "Improve efficiency and reduce upkeep.",
             self.hub_button: "Build a transport hub to boost deliveries.",
             self.upgrade_hub_button: "Upgrade hub for better delivery bonuses.",
+            self.trade_button: "Trade with companies and nations for bulk deals.",
             self.sell_button: "Sell all stored oil at market price.",
             self.sell_petrol_button: "Sell refined petrol at market price.",
             self.contract_button: "Review and sign delivery contracts.",
@@ -543,6 +580,11 @@ class BlackOilGame:
         self.total_petrol_refined = 0
         self.total_contract_delivered = 0
         self.day_phase = 0
+        self.market_trend = 0.0
+        self.market_supply = 0
+        self.market_demand = BASE_DEMAND
+        self.last_day_production = 0
+        self.buyers = self._create_buyers()
         self.map_seed = random.randint(1000, 9999)
         self.decorations = self._create_decorations(self.map_seed)
         self.tiles = self._create_tiles()
@@ -575,9 +617,18 @@ class BlackOilGame:
 
     def _create_competitors(self) -> list[Competitor]:
         return [
-            Competitor("Iron Ridge", 4200, 0.55, "#ef4444", 35),
-            Competitor("Desert Drill", 3800, 0.45, "#f97316", 30),
-            Competitor("Silver Creek", 3400, 0.4, "#a855f7", 28),
+            Competitor("Iron Ridge", 4200, 0.55, "#ef4444", 35, 0.7, 0.6),
+            Competitor("Desert Drill", 3800, 0.45, "#f97316", 30, 0.55, 0.5),
+            Competitor("Silver Creek", 3400, 0.4, "#a855f7", 28, 0.45, 0.7),
+        ]
+
+    def _create_buyers(self) -> list[Buyer]:
+        return [
+            Buyer("Kingston Rail", "Company", 140, 1.05),
+            Buyer("Northern Navy", "Nation", 160, 1.1),
+            Buyer("Harbor Authority", "Company", 120, 1.0),
+            Buyer("Imperial Trade Office", "Nation", 110, 1.12),
+            Buyer("Frontier Republic", "Nation", 100, 0.98),
         ]
 
     def _create_decorations(self, seed: int) -> list[tuple[int, int, int, str]]:
@@ -660,9 +711,55 @@ class BlackOilGame:
         for x, y, size, color in self.decorations:
             self.canvas.create_oval(x, y, x + size, y + size, fill=color, outline="")
 
+        self._draw_river(canvas_size)
+        self._draw_grid_roads(canvas_size)
+
+        contour_color = "#0f172a"
+        for i in range(4):
+            offset = canvas_size * (0.15 + i * 0.18)
+            self.canvas.create_line(
+                0,
+                offset,
+                canvas_size,
+                offset + canvas_size * 0.08,
+                fill=contour_color,
+                width=2,
+                stipple="gray25",
+            )
+
         if self.day_phase % 4 == 3:
             self.canvas.create_rectangle(
                 0, 0, canvas_size, canvas_size, fill="#0b1120", stipple="gray50", outline=""
+            )
+
+    def _draw_river(self, canvas_size: int) -> None:
+        rng = random.Random(self.map_seed)
+        points = []
+        x = rng.randint(int(canvas_size * 0.1), int(canvas_size * 0.2))
+        for step in range(7):
+            y = int(canvas_size * (step / 6))
+            x += rng.randint(-20, 25)
+            x = max(10, min(canvas_size - 10, x))
+            points.append((x, y))
+        for i in range(len(points) - 1):
+            x0, y0 = points[i]
+            x1, y1 = points[i + 1]
+            self.canvas.create_line(x0, y0, x1, y1, fill="#38bdf8", width=10, smooth=True)
+            self.canvas.create_line(x0, y0, x1, y1, fill="#0ea5e9", width=6, smooth=True)
+
+    def _draw_grid_roads(self, canvas_size: int) -> None:
+        grid = self.scenario.grid_size
+        if grid <= 3:
+            return
+        step = canvas_size / grid
+        for idx in range(1, grid):
+            x = int(step * idx)
+            y = int(step * idx)
+            self.canvas.create_line(
+                x, 0, x, canvas_size, fill="#1f2937", width=3, stipple="gray25"
+            )
+            self.canvas.create_line(
+                0, y, canvas_size, y, fill="#1f2937", width=3, stipple="gray25"
             )
 
     def _draw_pump(self, x0: int, y0: int, size: int, color: str) -> None:
@@ -799,6 +896,7 @@ class BlackOilGame:
     def _draw_smokestack(self, x0: int, y0: int, size: int) -> None:
         if not self.refinery.active:
             return
+        drift = (self.fx_tick % 10) - 5
         self.canvas.create_rectangle(
             x0 + size * 0.75,
             y0 + size * 0.2,
@@ -809,10 +907,18 @@ class BlackOilGame:
         )
         puff_color = "#94a3b8" if self.day_phase % 2 == 0 else "#cbd5f5"
         self.canvas.create_oval(
-            x0 + size * 0.72,
+            x0 + size * 0.72 + drift,
             y0 + size * 0.12,
-            x0 + size * 0.9,
+            x0 + size * 0.9 + drift,
             y0 + size * 0.28,
+            fill=puff_color,
+            outline="",
+        )
+        self.canvas.create_oval(
+            x0 + size * 0.66 + drift,
+            y0 + size * 0.02,
+            x0 + size * 0.82 + drift,
+            y0 + size * 0.18,
             fill=puff_color,
             outline="",
         )
@@ -835,6 +941,29 @@ class BlackOilGame:
                 width=1,
                 stipple="gray25",
             )
+        rng = random.Random(self.map_seed + int(x0 + y0))
+        for _ in range(2):
+            px = rng.randint(int(x0 + 2), int(x1 - 6))
+            py = rng.randint(int(y0 + 2), int(y1 - 6))
+            self.canvas.create_oval(
+                px,
+                py,
+                px + 4,
+                py + 4,
+                fill=color,
+                outline="",
+            )
+
+    def _terrain_for_tile(self, row: int, col: int) -> tuple[str, str]:
+        rng = random.Random(self.map_seed + row * 31 + col * 17)
+        roll = rng.random()
+        if roll < 0.18:
+            return "#0f766e", "#14b8a6"
+        if roll < 0.4:
+            return "#14532d", "#166534"
+        if roll < 0.65:
+            return "#4b5563", "#64748b"
+        return "#7c5c3f", "#8b6b4c"
 
     def _draw_pipeline(self, tile: Tile, size: int) -> None:
         if tile.owner != "player" or not tile.has_pump:
@@ -863,17 +992,20 @@ class BlackOilGame:
     def _draw_grid(self) -> None:
         self.canvas.delete("all")
         grid_size = self.scenario.grid_size
-        self.tile_size = min(600 // grid_size, 110)
+        self.tile_size = min(MAP_PIXEL_SIZE // grid_size, 70)
         canvas_size = self.tile_size * grid_size
         self.canvas.config(width=canvas_size, height=canvas_size)
         self._draw_background(canvas_size)
+
+        pulse = 1 + (self.fx_tick % 6) * 0.08
 
         for tile in self.tiles:
             x0 = tile.col * self.tile_size
             y0 = tile.row * self.tile_size
             x1 = x0 + self.tile_size
             y1 = y0 + self.tile_size
-            fill = self._owner_color(tile.owner)
+            terrain_fill, terrain_detail = self._terrain_for_tile(tile.row, tile.col)
+            fill = terrain_fill
             outline = "#334155"
             if tile.depleted and tile.owner:
                 fill = "#475569"
@@ -888,6 +1020,14 @@ class BlackOilGame:
             )
             self.canvas.create_rectangle(x0, y0, x1, y1, fill=fill, outline=outline, width=2)
             self.canvas.create_rectangle(
+                x0 + 2,
+                y0 + 2,
+                x1 - 2,
+                y1 - 2,
+                outline=terrain_detail,
+                width=1,
+            )
+            self.canvas.create_rectangle(
                 x0 + 4,
                 y0 + 4,
                 x1 - 4,
@@ -895,7 +1035,26 @@ class BlackOilGame:
                 outline="#94a3b8",
                 width=1,
             )
-            self._draw_tile_texture(x0 + 6, y0 + 6, x1 - 6, y1 - 6, tile.owner)
+            self._draw_tile_texture(x0 + 4, y0 + 4, x1 - 4, y1 - 4, None)
+            if tile.owner:
+                owner_color = self._owner_color(tile.owner)
+                self.canvas.create_rectangle(
+                    x0 + 3,
+                    y0 + 3,
+                    x1 - 3,
+                    y1 - 3,
+                    outline=owner_color,
+                    width=2,
+                )
+                self.canvas.create_rectangle(
+                    x0 + 3,
+                    y0 + 3,
+                    x1 - 3,
+                    y1 - 3,
+                    fill=owner_color,
+                    stipple="gray25",
+                    outline="",
+                )
 
             if tile.drilled:
                 self.canvas.create_oval(
@@ -931,10 +1090,10 @@ class BlackOilGame:
 
             if tile is self.selected_tile:
                 self.canvas.create_rectangle(
-                    x0 + 3,
-                    y0 + 3,
-                    x1 - 3,
-                    y1 - 3,
+                    x0 + 3 - pulse,
+                    y0 + 3 - pulse,
+                    x1 - 3 + pulse,
+                    y1 - 3 + pulse,
                     outline="#fbbf24",
                     width=3,
                 )
@@ -956,6 +1115,17 @@ class BlackOilGame:
                     text=f"L{tile.pump_level}",
                     fill="#f8fafc",
                     font=("Helvetica", 7, "bold"),
+                )
+
+            if tile.has_pump:
+                pulse = 1 + (self.fx_tick % 6) * 0.1
+                self.canvas.create_oval(
+                    x0 + self.tile_size * 0.72,
+                    y0 + self.tile_size * 0.08,
+                    x0 + self.tile_size * 0.72 + 6 * pulse,
+                    y0 + self.tile_size * 0.08 + 6 * pulse,
+                    fill="#fbbf24",
+                    outline="",
                 )
 
         for tile in self.tiles:
@@ -995,6 +1165,7 @@ class BlackOilGame:
             if self.transport_hub.active and self.transport_hub.level < HUB_MAX_LEVEL
             else tk.DISABLED
         )
+        self.trade_button.config(state=tk.NORMAL if self._total_storage("player") > 0 else tk.DISABLED)
         self.sell_button.config(state=tk.NORMAL if self._total_storage("player") > 0 else tk.DISABLED)
         self.sell_petrol_button.config(state=tk.NORMAL if self.petrol_storage > 0 else tk.DISABLED)
 
@@ -1012,6 +1183,7 @@ class BlackOilGame:
                 f"(Cap {self.refinery.capacity})\n"
                 f"Research Level: {self.research_level}\n"
                 f"Transport Hub: {self.transport_hub.level}/{HUB_MAX_LEVEL}\n"
+                f"Demand Index: {self.market_demand}\n"
                 f"Loan Balance: ${self.loan_balance:,}\n"
                 f"Event: {self.event_message or 'None'}"
             )
@@ -1044,6 +1216,17 @@ class BlackOilGame:
         self._draw_grid()
         self._update_buttons()
         self._update_competitor_panel()
+
+    def _start_fx_loop(self) -> None:
+        if self.fx_running:
+            return
+        self.fx_running = True
+        self._tick_fx()
+
+    def _tick_fx(self) -> None:
+        self.fx_tick = (self.fx_tick + 1) % 120
+        self._draw_grid()
+        self.root.after(180, self._tick_fx)
 
     def _update_competitor_panel(self) -> None:
         lines = ["Competitors:"]
@@ -1273,6 +1456,53 @@ class BlackOilGame:
         self._play_sound("build")
         self._refresh_ui()
 
+    def trade_market(self) -> None:
+        if self._total_storage("player") <= 0 and self.petrol_storage <= 0:
+            return
+        offers = self._trade_offers()
+        commodity = simpledialog.askstring("Trade Market", "Trade commodity: oil or petrol?")
+        if not commodity:
+            return
+        commodity = commodity.strip().lower()
+        if commodity not in {"oil", "petrol"}:
+            messagebox.showinfo("Trade Market", "Please enter 'oil' or 'petrol'.")
+            return
+        available = self._total_storage("player") if commodity == "oil" else self.petrol_storage
+        if available <= 0:
+            messagebox.showinfo("Trade Market", f"No {commodity} available to trade.")
+            return
+        market_price = self.price if commodity == "oil" else self.petrol_price
+        lines = [f"Trade Desk - Companies & Nations ({commodity.title()})"]
+        for idx, offer in enumerate(offers, start=1):
+            lines.append(
+                f"{idx}. {offer.name} ({offer.category}) "
+                f"{offer.demand} barrels @ ${offer.price_for(market_price)}"
+            )
+        lines.append("Enter buyer number to sell (0 to cancel).")
+        choice = simpledialog.askinteger("Trade Market", "\n".join(lines), minvalue=0, maxvalue=len(offers))
+        if choice is None or choice == 0:
+            return
+        buyer = offers[choice - 1]
+        volume = min(buyer.demand, available)
+        revenue = volume * buyer.price_for(market_price)
+        if commodity == "oil":
+            self._withdraw_oil(volume)
+        else:
+            self.petrol_storage -= volume
+        self.cash += revenue
+        buyer.demand = max(0, buyer.demand - volume)
+        buyer.reputation = min(REPUTATION_MAX, buyer.reputation + 1)
+        self._log(f"Traded {volume} barrels of {commodity} with {buyer.name} for ${revenue}.")
+        self._play_sound("sell")
+        self._refresh_ui()
+
+    def _trade_offers(self) -> list[Buyer]:
+        rng = random.Random(self.map_seed + self.day)
+        offers = rng.sample(self.buyers, k=min(3, len(self.buyers)))
+        for buyer in offers:
+            buyer.demand = max(TRADE_MIN_VOLUME, min(TRADE_MAX_VOLUME, buyer.demand + rng.randint(-20, 20)))
+        return offers
+
     def upgrade_refinery(self) -> None:
         if not self.refinery.active:
             return
@@ -1388,12 +1618,13 @@ class BlackOilGame:
 
         self.day += 1
         self._play_sound("advance")
-        self._apply_market()
-        self._apply_petrol_market()
         self._produce_oil()
         self._refine_oil()
         self._process_contracts()
         self._competitor_turns()
+        self._update_market_conditions()
+        self._apply_market()
+        self._apply_petrol_market()
         self._random_event()
         self._daily_maintenance()
         self._apply_interest()
@@ -1405,14 +1636,24 @@ class BlackOilGame:
             self._final_score()
 
     def _apply_market(self) -> None:
-        delta = random.randint(-20, 20)
-        self.price = max(self.scenario.price_min, min(self.scenario.price_max, self.price + delta))
+        supply_pressure = max(-50, min(50, self.market_demand - self.market_supply))
+        delta = (self.market_trend * 6) + (supply_pressure * MARKET_IMPACT) + random.randint(-10, 10)
+        self.price = int(self.price + delta)
+        self.price = max(self.scenario.price_min, min(self.scenario.price_max, self.price))
 
     def _apply_petrol_market(self) -> None:
-        delta = random.randint(-18, 18)
+        delta = random.randint(-10, 10) + int((self.price - self.scenario.price_min) * 0.1)
         self.petrol_price = max(PETROL_PRICE_MIN, min(PETROL_PRICE_MAX, self.petrol_price + delta))
 
+    def _update_market_conditions(self) -> None:
+        shock = random.uniform(-0.6, 0.6)
+        self.market_trend = max(-MARKET_TREND_MAX, min(MARKET_TREND_MAX, self.market_trend + shock))
+        trend_bias = int(self.market_trend * 18)
+        self.market_demand = max(40, BASE_DEMAND + trend_bias + random.randint(-DEMAND_VARIANCE, DEMAND_VARIANCE))
+        self.market_supply = self.last_day_production
+
     def _produce_oil(self) -> None:
+        self.last_day_production = 0
         for tile in self.tiles:
             if tile.has_pump and tile.reserve > 0 and tile.available_capacity > 0:
                 efficiency_bonus = 1 + (self.research_level * 0.05)
@@ -1421,6 +1662,7 @@ class BlackOilGame:
                 tile.reserve -= output
                 tile.storage += output
                 self.total_oil_produced += output
+                self.last_day_production += output
                 if tile.reserve == 0:
                     self._log(
                         f"Well at ({tile.row + 1}, {tile.col + 1}) ran dry. Storage holds {tile.storage} barrels."
@@ -1461,12 +1703,15 @@ class BlackOilGame:
         open_tiles = [tile for tile in self.tiles if tile.owner is None]
         if not open_tiles or competitor.cash < self.scenario.land_cost:
             return
-        target = random.choice(open_tiles)
+        open_tiles.sort(key=lambda tile: tile.reserve, reverse=True)
+        pick = random.randint(0, min(3, len(open_tiles) - 1))
+        target = open_tiles[pick]
         target.owner = competitor.name
         competitor.cash -= self.scenario.land_cost
         self._log(f"{competitor.name} secured land at ({target.row + 1}, {target.col + 1}).")
 
     def _competitor_operate(self, competitor: Competitor) -> None:
+        price_ratio = self.price / self.scenario.price_max
         for tile in self._owned_tiles(competitor.name):
             if not tile.drilled and competitor.cash >= self.scenario.drill_cost:
                 tile.drilled = True
@@ -1475,14 +1720,16 @@ class BlackOilGame:
                 tile.pump_level = 1
                 competitor.cash -= self.scenario.pump_cost
             if tile.has_pump and tile.pump_level < MAX_PUMP_LEVEL and competitor.cash >= PUMP_UPGRADE_COST:
-                tile.pump_level += 1
-                competitor.cash -= PUMP_UPGRADE_COST
-            if tile.has_pump and tile.available_capacity < 5 and competitor.cash >= self.scenario.storage_cost:
-                tile.capacity += 10
-                competitor.cash -= self.scenario.storage_cost
+                if price_ratio > competitor.risk_tolerance:
+                    tile.pump_level += 1
+                    competitor.cash -= PUMP_UPGRADE_COST
+            if tile.has_pump and tile.available_capacity < 10 and competitor.cash >= self.scenario.storage_cost:
+                if price_ratio < (1 - competitor.discipline):
+                    tile.capacity += 10
+                    competitor.cash -= self.scenario.storage_cost
 
         storage = sum(tile.storage for tile in self._owned_tiles(competitor.name))
-        if storage >= competitor.storage_threshold or self.price > self.scenario.price_max * 0.85:
+        if storage >= competitor.storage_threshold and price_ratio > competitor.discipline:
             revenue = storage * self.price
             competitor.cash += revenue
             for tile in self._owned_tiles(competitor.name):
@@ -1599,6 +1846,20 @@ class BlackOilGame:
             "total_petrol_refined": self.total_petrol_refined,
             "total_contract_delivered": self.total_contract_delivered,
             "day_phase": self.day_phase,
+            "market_trend": self.market_trend,
+            "market_supply": self.market_supply,
+            "market_demand": self.market_demand,
+            "last_day_production": self.last_day_production,
+            "buyers": [
+                {
+                    "name": buyer.name,
+                    "category": buyer.category,
+                    "demand": buyer.demand,
+                    "multiplier": buyer.multiplier,
+                    "reputation": buyer.reputation,
+                }
+                for buyer in self.buyers
+            ],
             "contracts": [
                 {
                     "name": contract.name,
@@ -1634,6 +1895,8 @@ class BlackOilGame:
                     "aggressiveness": competitor.aggressiveness,
                     "color": competitor.color,
                     "storage_threshold": competitor.storage_threshold,
+                    "risk_tolerance": competitor.risk_tolerance,
+                    "discipline": competitor.discipline,
                 }
                 for competitor in self.competitors
             ],
@@ -1672,6 +1935,24 @@ class BlackOilGame:
         self.total_petrol_refined = data.get("total_petrol_refined", 0)
         self.total_contract_delivered = data.get("total_contract_delivered", 0)
         self.day_phase = data.get("day_phase", 0)
+        self.market_trend = data.get("market_trend", 0.0)
+        self.market_supply = data.get("market_supply", 0)
+        self.market_demand = data.get("market_demand", BASE_DEMAND)
+        self.last_day_production = data.get("last_day_production", 0)
+        buyers_data = data.get("buyers")
+        if buyers_data:
+            self.buyers = [
+                Buyer(
+                    name=item["name"],
+                    category=item["category"],
+                    demand=item["demand"],
+                    multiplier=item["multiplier"],
+                    reputation=item.get("reputation", 0),
+                )
+                for item in buyers_data
+            ]
+        else:
+            self.buyers = self._create_buyers()
         self.contracts = [
             Contract(
                 name=item["name"],
@@ -1710,6 +1991,8 @@ class BlackOilGame:
                 aggressiveness=comp["aggressiveness"],
                 color=comp["color"],
                 storage_threshold=comp.get("storage_threshold", 30),
+                risk_tolerance=comp.get("risk_tolerance", 0.5),
+                discipline=comp.get("discipline", 0.5),
             )
             for comp in data.get("competitors", [])
         ]
