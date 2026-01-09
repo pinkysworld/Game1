@@ -7,16 +7,21 @@ A macOS-friendly, single-player strategy game inspired by Sierra's classic oil b
 - **Competitors** that buy land, drill, pump, upgrade, and sell against you.
 - **Surveys** to estimate reserves before drilling.
 - **Pump upgrades** to boost daily production.
+- **Refineries** that convert crude into petrol for higher margins.
+- **Contracts** that lock in delivery prices and deadlines.
 - **Loans** that help fund expansion (with interest).
+- **Research** to improve production efficiency and reduce upkeep.
 - **Save & load** support to continue your campaign later.
 - **Styled map visuals** with themed backdrops and pump indicators.
 - **Sound effects** with a toggle to mute or enable audio cues.
+- **Menu bar** with File/Options/Help for a classic feel.
 
 ## Controls
 - Click a tile on the map to select it.
 - Use the action buttons on the right panel to manage that tile.
 - Advance the day to trigger production, competitor moves, and market changes.
 - Save or load from the panel at any time.
+- Use the menu bar for quick access to new game, save/load, and settings.
 
 ## Requirements
 - Python 3.10+
